@@ -1,0 +1,53 @@
+﻿name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Build & Test (Desktop & Memory Contract)
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cargo Check
+        run: cargo check --all-targets
+
+      - name: Run Unit & Property Tests
+        run: cargo test --verbose
+
+      - name: Verify Memory Contract Ceiling
+        run: cargo test --test memory_ceiling -- --test-threads=1 --nocapture
+
+      - name: Run CI Memory Profile Check Script
+        run: python mem_profile/ci_check.py
+
+  embedded:
+    name: Cross-Compile ARM Cortex-M4/M7 (no_std)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust & Embedded Target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      - name: Build Embedded no_std Release
+        run: cargo build --target thumbv7em-none-eabihf --no-default-features --features alloc --release

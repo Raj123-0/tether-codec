@@ -1,0 +1,39 @@
+﻿[package]
+name = "tether-codec"
+version = "0.1.0"
+edition = "2021"
+authors = ["Dave A. <davea@users.noreply.github.com>"]
+description = "Low-memory, high-speed lossless compression for streaming numeric/sensor data"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Raj123-0/tether-codec"
+keywords = ["compression", "lossless", "time-series", "sensor", "embedded"]
+categories = ["compression", "embedded", "no-std"]
+readme = "README.md"
+
+[lib]
+name = "tether"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tether"
+path = "src/main.rs"
+required-features = ["std"]
+
+[[bench]]
+name = "throughput"
+harness = false
+required-features = ["std"]
+
+[features]
+default = ["std"]
+std = ["alloc"]
+alloc = []
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.bench]
+opt-level = 3
+lto = "thin"
