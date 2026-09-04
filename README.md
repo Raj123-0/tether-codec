@@ -1,4 +1,4 @@
-﻿# Tether (`tether-codec`)
+# Tether (`tether-codec`)
 
 **Low-memory, high-speed lossless compression for streaming numeric and sensor time-series data.**
 
@@ -30,23 +30,25 @@ All benchmarks are evaluated under stated memory budgets on real and synthetic s
 
 | Dataset | Codec | Ratio | Enc Speed | Dec Speed | Peak RAM (Enc / Dec) | Notes |
 |:---|:---|:---:|:---:|:---:|:---:|:---|
-| **Wearable IMU Telemetry** (100k samples) | **Tether (32KB Profile)** | **8.30x** | **20.7 MB/s** | **22.8 MB/s** | **5.7 KB / 2.4 KB** | **Pareto frontier winner** |
-| | Tether (4KB Micro Profile) | 7.28x | 21.1 MB/s | 18.5 MB/s | 3.2 KB / 2.2 KB | Ultra-constrained MCU |
-| | zstd (32KB Window, L1) | 6.58x | 190.3 MB/s | 501.5 MB/s | 784.3 KB / 781.3 KB | Uses >100x more RAM |
-| | LZ4 (Standard) | 2.78x | 633.2 MB/s | 887.6 MB/s | 1065.7 KB / 1562.5 KB | Poor ratio on sensor data |
-| | Gorilla XOR | 1.08x | 17.6 MB/s | 21.1 MB/s | 2.0 KB / 2.0 KB | Fails on integer trends |
-| **Industrial Power Telemetry** (100k samples) | **Tether (32KB Profile)** | **8.76x** | **21.0 MB/s** | **19.3 MB/s** | **5.7 KB / 2.4 KB** | **Pareto frontier winner** |
-| | zstd (32KB Window, L1) | 5.60x | 187.9 MB/s | 404.5 MB/s | 784.3 KB / 781.3 KB | Uses >100x more RAM |
-| | LZ4 (Standard) | 2.80x | 619.9 MB/s | 949.2 MB/s | 1063.0 KB / 1562.5 KB | 3x lower ratio |
-| **Synthetic Linear Ramp** (100k samples) | **Tether (32KB Profile)** | **31.75x** | **23.2 MB/s** | **22.6 MB/s** | **5.7 KB / 2.4 KB** | Adaptive FIR crushes baseline |
-| | zstd (32KB Window, L1) | 7.53x | 221.3 MB/s | 463.7 MB/s | 784.3 KB / 781.3 KB | 4x lower ratio than Tether |
-| **Synthetic Sine Wave** (100k samples) | **Tether (32KB Profile)** | **6.91x** | **8.1 MB/s** | **22.5 MB/s** | **5.7 KB / 2.4 KB** | Beats zstd under 32KB budget |
-| | zstd (32KB Window, L1) | 5.88x | 232.2 MB/s | 577.5 MB/s | 784.3 KB / 781.3 KB | Higher throughput, 100x RAM |
-| **Adversarial Random** (100k samples) | **Tether (32KB Profile)** | **1.00x** | **21.0 MB/s** | **23.4 MB/s** | **5.7 KB / 2.4 KB** | Raw fallback prevents expansion |
-| | zstd (32KB Window, L1) | 1.00x | 537.9 MB/s | 1060.8 MB/s | 784.3 KB / 781.3 KB | Raw fallback |
+| **Wearable IMU Telemetry** (100k samples) | **Tether (32KB Profile)** | **8.76x** | **271.6 MB/s** | **313.6 MB/s** | **5.7 KB / 2.4 KB** | **Pareto frontier winner** |
+| | Tether (4KB Micro Profile) | 7.81x | 244.2 MB/s | 285.0 MB/s | 3.2 KB / 2.2 KB | Ultra-constrained MCU |
+| | zstd (32KB Window, L1) | 6.58x | 277.7 MB/s | 600.2 MB/s | 784.3 KB / 781.3 KB | Uses >130x more RAM |
+| | LZ4 (Standard) | 2.78x | 710.2 MB/s | 1131.8 MB/s | 1065.7 KB / 1562.5 KB | Poor ratio on sensor data |
+| | Gorilla XOR | 1.08x | 24.2 MB/s | 29.0 MB/s | 2.0 KB / 2.0 KB | Fails on integer trends |
+| **Industrial Power Telemetry** (100k samples) | **Tether (32KB Profile)** | **11.75x** | **229.2 MB/s** | **308.5 MB/s** | **5.7 KB / 2.4 KB** | **Pareto frontier winner (2x > zstd)** |
+| | zstd (32KB Window, L1) | 5.60x | 267.2 MB/s | 494.0 MB/s | 784.3 KB / 781.3 KB | Uses >130x more RAM |
+| | LZ4 (Standard) | 2.80x | 669.7 MB/s | 1301.9 MB/s | 1063.0 KB / 1562.5 KB | 4x lower ratio |
+| **Synthetic Linear Ramp** (100k samples) | **Tether (32KB Profile)** | **31.83x** | **369.0 MB/s** | **439.2 MB/s** | **5.7 KB / 2.4 KB** | Delta-of-Delta crushes baseline |
+| | zstd (32KB Window, L1) | 7.53x | 285.8 MB/s | 444.0 MB/s | 784.3 KB / 781.3 KB | 4x lower ratio than Tether |
+| **Synthetic Sine Wave** (100k samples) | **Tether (32KB Profile)** | **14.96x** | **270.4 MB/s** | **303.6 MB/s** | **5.7 KB / 2.4 KB** | 2.5x higher ratio than zstd |
+| | zstd (32KB Window, L1) | 5.88x | 273.2 MB/s | 639.0 MB/s | 784.3 KB / 781.3 KB | Higher RAM, 2.5x worse ratio |
+| **Periodic Square** (100k samples) | **Tether (32KB Profile)** | **64.21x** | **497.6 MB/s** | **593.4 MB/s** | **5.7 KB / 2.4 KB** | Zero-run residual packing |
+| | zstd (32KB Window, L1) | 391.77x | 2391.7 MB/s | 1913.1 MB/s | 784.3 KB / 781.3 KB | LZ77 match copier |
+| **Adversarial Random** (100k samples) | **Tether (32KB Profile)** | **1.00x** | **164.4 MB/s** | **859.1 MB/s** | **5.7 KB / 2.4 KB** | Raw fallback prevents expansion |
+| | zstd (32KB Window, L1) | 1.00x | 795.3 MB/s | 2722.8 MB/s | 784.3 KB / 781.3 KB | Raw fallback |
 
 ### Where Tether Loses (Reported Honestly)
-- **Repeating byte patterns (e.g. Periodic Square)**: General-purpose LZ77 compressors (zstd/LZ4) with dictionary match-finders excel at copying long repeated sequences, achieving 80x–390x ratios at the expense of multi-megabyte memory buffers. Tether compresses this by ~40x within its strictly bounded 5.7 KB footprint.
+- **Repeating byte patterns (e.g. Periodic Square)**: General-purpose LZ77 compressors (zstd/LZ4) with dictionary match-finders excel at copying long repeated sequences, achieving 80x–390x ratios at the expense of multi-megabyte memory buffers. Tether compresses this by 64.2x within its strictly bounded 5.7 KB footprint.
 - **Unstructured / Text / Blob data**: Tether is explicitly not designed for natural language, HTML, or pre-compressed payloads. Use zstd or LZ4 there.
 
 ---
@@ -78,8 +80,12 @@ tether compress sensor.bin -o sensor.tth --profile embedded-32kb
 # Compress an f64 stream with the 4KB micro profile
 tether compress temp_telemetry.bin -o temp.tth --profile micro-4kb --type f64
 
+# Compress a 2D image row-by-row in O(width) RAM
+tether compress-image screenshot.raw -o screenshot.tthi -w 256 -h 256
+
 # Decompress
 tether decompress sensor.tth -o sensor.bin
+tether decompress-image screenshot.tthi -o screenshot.raw
 
 # Inspect file metadata and memory profile
 tether info sensor.tth

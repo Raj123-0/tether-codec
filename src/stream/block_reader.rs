@@ -2,7 +2,7 @@ use crate::Vec;
 // Block framing reader for compressed and raw blocks.
 
 use crate::entropy::{AdaptiveTable, RansDecoder};
-use crate::predictor::delta_xor::{decode_delta_i64_block, decode_xor_u64_block};
+use crate::predictor::delta_xor::{decode_delta_i64_block, decode_delta2_i64_block, decode_xor_u64_block};
 use crate::predictor::adaptive_linear::decode_adaptive_fir_block;
 use crate::predictor::PredictorMode;
 use crate::stream::bitstream::BitReader;
@@ -49,12 +49,26 @@ impl BlockReader {
                 *offset += payload_len;
                 Ok(true)
             }
+            PredictorMode::Constant => {
+                if *offset + 2 + 8 > data.len() {
+                    return Err("Truncated constant block header");
+                }
+                let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let val = u64::from_le_bytes(data[*offset..*offset + 8].try_into().unwrap());
+                *offset += 8;
+
+                samples_out.extend(core::iter::repeat(val).take(sample_count));
+                Ok(true)
+            }
             PredictorMode::Delta => {
-                if *offset + 2 + 2 + 2 + 8 > data.len() {
+                if *offset + 2 + 2 + 2 + 2 + 8 > data.len() {
                     return Err("Truncated delta block header");
                 }
 
                 let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let symbol_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
                 *offset += 2;
                 let extra_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
                 *offset += 2;
@@ -73,7 +87,7 @@ impl BlockReader {
                 *offset += rans_len;
 
                 let mut rans_dec = RansDecoder::new(rans_bytes)?;
-                let symbols = rans_dec.decode_block(sample_count, table);
+                let symbols = rans_dec.decode_block(symbol_count, table);
 
                 for &s in &symbols {
                     table.observe(s);
@@ -81,7 +95,51 @@ impl BlockReader {
 
                 let mut bit_reader = BitReader::new(extra_bytes);
                 let mut decoded_i64 = Vec::with_capacity(sample_count);
-                decode_delta_i64_block(&symbols, initial_sample, &mut bit_reader, &mut decoded_i64);
+                decode_delta_i64_block(&symbols, initial_sample, &mut bit_reader, sample_count, &mut decoded_i64)?;
+
+                for val in decoded_i64 {
+                    samples_out.push(val as u64);
+                }
+
+                Ok(true)
+            }
+            PredictorMode::DeltaOfDelta => {
+                if *offset + 2 + 2 + 2 + 2 + 16 > data.len() {
+                    return Err("Truncated delta-of-delta block header");
+                }
+
+                let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let symbol_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let extra_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let rans_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let prev1 = i64::from_le_bytes(data[*offset..*offset + 8].try_into().unwrap());
+                *offset += 8;
+                let prev2 = i64::from_le_bytes(data[*offset..*offset + 8].try_into().unwrap());
+                *offset += 8;
+
+                if *offset + extra_len + rans_len > data.len() {
+                    return Err("Truncated delta-of-delta block payloads");
+                }
+
+                let extra_bytes = &data[*offset..*offset + extra_len];
+                *offset += extra_len;
+                let rans_bytes = &data[*offset..*offset + rans_len];
+                *offset += rans_len;
+
+                let mut rans_dec = RansDecoder::new(rans_bytes)?;
+                let symbols = rans_dec.decode_block(symbol_count, table);
+
+                for &s in &symbols {
+                    table.observe(s);
+                }
+
+                let mut bit_reader = BitReader::new(extra_bytes);
+                let mut decoded_i64 = Vec::with_capacity(sample_count);
+                decode_delta2_i64_block(&symbols, prev1, prev2, &mut bit_reader, sample_count, &mut decoded_i64)?;
 
                 for val in decoded_i64 {
                     samples_out.push(val as u64);
@@ -90,11 +148,13 @@ impl BlockReader {
                 Ok(true)
             }
             PredictorMode::AdaptiveLinear => {
-                if *offset + 2 + 2 + 2 + 24 > data.len() {
+                if *offset + 2 + 2 + 2 + 2 + 24 > data.len() {
                     return Err("Truncated adaptive FIR block header");
                 }
 
                 let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let symbol_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
                 *offset += 2;
                 let extra_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
                 *offset += 2;
@@ -118,7 +178,7 @@ impl BlockReader {
                 *offset += rans_len;
 
                 let mut rans_dec = RansDecoder::new(rans_bytes)?;
-                let symbols = rans_dec.decode_block(sample_count, table);
+                let symbols = rans_dec.decode_block(symbol_count, table);
 
                 for &s in &symbols {
                     table.observe(s);
@@ -126,7 +186,7 @@ impl BlockReader {
 
                 let mut bit_reader = BitReader::new(extra_bytes);
                 let mut decoded_i64 = Vec::with_capacity(sample_count);
-                decode_adaptive_fir_block(&symbols, [h0, h1, h2], &mut bit_reader, &mut decoded_i64);
+                decode_adaptive_fir_block(&symbols, [h0, h1, h2], &mut bit_reader, sample_count, &mut decoded_i64)?;
 
                 for val in decoded_i64 {
                     samples_out.push(val as u64);
@@ -135,11 +195,13 @@ impl BlockReader {
                 Ok(true)
             }
             PredictorMode::Xor => {
-                if *offset + 2 + 2 + 2 + 8 > data.len() {
+                if *offset + 2 + 2 + 2 + 2 + 8 > data.len() {
                     return Err("Truncated XOR block header");
                 }
 
                 let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let symbol_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
                 *offset += 2;
                 let extra_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
                 *offset += 2;
@@ -158,14 +220,14 @@ impl BlockReader {
                 *offset += rans_len;
 
                 let mut rans_dec = RansDecoder::new(rans_bytes)?;
-                let symbols = rans_dec.decode_block(sample_count, table);
+                let symbols = rans_dec.decode_block(symbol_count, table);
 
                 for &s in &symbols {
                     table.observe(s);
                 }
 
                 let mut bit_reader = BitReader::new(extra_bytes);
-                decode_xor_u64_block(&symbols, initial_sample, &mut bit_reader, samples_out);
+                decode_xor_u64_block(&symbols, initial_sample, &mut bit_reader, sample_count, samples_out)?;
 
                 Ok(true)
             }

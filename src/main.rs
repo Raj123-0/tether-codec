@@ -14,14 +14,19 @@ fn print_usage() {
 USAGE:
     tether compress INPUT -o OUTPUT [OPTIONS]
     tether decompress INPUT -o OUTPUT
+    tether compress-image INPUT -o OUTPUT -w WIDTH -h HEIGHT [-c CHANNELS]
+    tether decompress-image INPUT -o OUTPUT
     tether info FILE
 
 OPTIONS:
     -p, --profile PROFILE   Memory budget profile: micro-4kb, embedded-16kb,
                             embedded-32kb (default), desktop-64kb
     -t, --type TYPE         Data interpretation: auto (default), f64, i64
+    -w, --width WIDTH       Image width in pixels (for compress-image)
+    -h, --height HEIGHT     Image height in pixels (for compress-image)
+    -c, --channels CHANNELS Image color channels: 1 (grayscale, default) or 3 (RGB)
     -v, --verbose           Print compression and performance metrics
-    -h, --help              Print this help information
+    --help                  Print this help information
 "#
     );
 }
@@ -217,6 +222,166 @@ fn main() {
                 println!("  Throughput:      {:.2} MB/s (took {:?})", mb_s, elapsed);
             }
         }
+        "compress-image" => {
+            if args.len() < 3 {
+                eprintln!("Error: Missing input path for image compression");
+                process::exit(1);
+            }
+            let input_path = &args[2];
+            let mut output_path = String::new();
+            let mut width = 0u32;
+            let mut height = 0u32;
+            let mut channels = 1u8;
+            let mut verbose = false;
+
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-o" | "--output" => {
+                        if i + 1 < args.len() {
+                            output_path = args[i + 1].clone();
+                            i += 1;
+                        }
+                    }
+                    "-w" | "--width" => {
+                        if i + 1 < args.len() {
+                            width = args[i + 1].parse().unwrap_or(0);
+                            i += 1;
+                        }
+                    }
+                    "-h" | "--height" => {
+                        if i + 1 < args.len() {
+                            height = args[i + 1].parse().unwrap_or(0);
+                            i += 1;
+                        }
+                    }
+                    "-c" | "--channels" => {
+                        if i + 1 < args.len() {
+                            channels = args[i + 1].parse().unwrap_or(1);
+                            i += 1;
+                        }
+                    }
+                    "-v" | "--verbose" => {
+                        verbose = true;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            if width == 0 || height == 0 {
+                eprintln!("Error: Must provide positive --width (-w) and --height (-h)");
+                process::exit(1);
+            }
+
+            if output_path.is_empty() {
+                output_path = format!("{}.tthi", input_path);
+            }
+
+            let input_bytes = match fs::read(input_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Failed to read {}: {}", input_path, e);
+                    process::exit(1);
+                }
+            };
+
+            let start = Instant::now();
+            let compressed = match tether::image::compress_image(width, height, channels, &input_bytes) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Image compression failed: {}", e);
+                    process::exit(1);
+                }
+            };
+            let elapsed = start.elapsed();
+
+            if let Err(e) = fs::write(&output_path, &compressed) {
+                eprintln!("Failed to write {}: {}", output_path, e);
+                process::exit(1);
+            }
+
+            let raw_len = input_bytes.len();
+            let comp_len = compressed.len();
+            let ratio = if comp_len > 0 { raw_len as f64 / comp_len as f64 } else { 0.0 };
+            let mb_s = (raw_len as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64().max(1e-9);
+
+            println!("Compressed image {} -> {}", input_path, output_path);
+            println!("  Dimensions:      {}x{} ({} channel{})", width, height, channels, if channels > 1 { "s" } else { "" });
+            println!("  Raw size:        {} bytes", raw_len);
+            println!("  Compressed size: {} bytes ({:.2}x ratio)", comp_len, ratio);
+            println!("  RAM footprint:   O(width) streaming (<= {} KB)", (width as usize * channels as usize * 4) / 1024 + 4);
+            if verbose {
+                println!("  Throughput:      {:.2} MB/s (took {:?})", mb_s, elapsed);
+            }
+        }
+        "decompress-image" => {
+            if args.len() < 3 {
+                eprintln!("Error: Missing input path for image decompression");
+                process::exit(1);
+            }
+            let input_path = &args[2];
+            let mut output_path = String::new();
+            let mut verbose = false;
+
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "-o" | "--output" => {
+                        if i + 1 < args.len() {
+                            output_path = args[i + 1].clone();
+                            i += 1;
+                        }
+                    }
+                    "-v" | "--verbose" => {
+                        verbose = true;
+                    }
+                    _ => {}
+                }
+                i += 1;
+            }
+
+            if output_path.is_empty() {
+                if input_path.ends_with(".tthi") {
+                    output_path = input_path[..input_path.len() - 5].to_string();
+                } else {
+                    output_path = format!("{}.raw", input_path);
+                }
+            }
+
+            let compressed = match fs::read(input_path) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("Failed to read {}: {}", input_path, e);
+                    process::exit(1);
+                }
+            };
+
+            let start = Instant::now();
+            let (width, height, channels, decompressed) = match tether::image::decompress_image(&compressed) {
+                Ok(res) => res,
+                Err(e) => {
+                    eprintln!("Image decompression failed: {}", e);
+                    process::exit(1);
+                }
+            };
+            let elapsed = start.elapsed();
+
+            if let Err(e) = fs::write(&output_path, &decompressed) {
+                eprintln!("Failed to write {}: {}", output_path, e);
+                process::exit(1);
+            }
+
+            let raw_len = decompressed.len();
+            let mb_s = (raw_len as f64 / (1024.0 * 1024.0)) / elapsed.as_secs_f64().max(1e-9);
+
+            println!("Decompressed image {} -> {}", input_path, output_path);
+            println!("  Dimensions:      {}x{} ({} channel{})", width, height, channels, if channels > 1 { "s" } else { "" });
+            println!("  Decompressed:    {} bytes", raw_len);
+            if verbose {
+                println!("  Throughput:      {:.2} MB/s (took {:?})", mb_s, elapsed);
+            }
+        }
         "info" => {
             if args.len() < 3 {
                 eprintln!("Error: Missing file path");
@@ -231,7 +396,23 @@ fn main() {
                 }
             };
 
-            if bytes.len() < 7 || &bytes[0..4] != tether::MAGIC {
+            if bytes.len() < 7 {
+                eprintln!("Error: File too short for header");
+                process::exit(1);
+            }
+
+            if &bytes[0..4] == b"TTHI" {
+                let width = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+                let height = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+                let channels = bytes[12];
+                println!("Tether Image File: {}", path);
+                println!("  Total Size:      {} bytes", bytes.len());
+                println!("  Dimensions:      {}x{} ({} channel{})", width, height, channels, if channels > 1 { "s" } else { "" });
+                println!("  Format:          Row-by-row streaming 2D spatial");
+                return;
+            }
+
+            if &bytes[0..4] != tether::MAGIC {
                 eprintln!("Error: Not a valid Tether compressed file");
                 process::exit(1);
             }

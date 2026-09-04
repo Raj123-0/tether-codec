@@ -71,3 +71,33 @@ fn test_image_edge_dimensions() {
         assert_eq!(dec_pixels, pixels);
     }
 }
+
+#[test]
+fn test_image_rgb_roundtrip() {
+    use tether::image::{compress_image_rgb, decompress_image_rgb};
+
+    let width = 64u32;
+    let height = 64u32;
+    let mut pixels = Vec::with_capacity((width * height * 3) as usize);
+
+    for y in 0..height {
+        for x in 0..width {
+            let r = ((x * 4) % 256) as u8;
+            let g = ((y * 4) % 256) as u8;
+            let b = (((x + y) * 2) % 256) as u8;
+            pixels.push(r);
+            pixels.push(g);
+            pixels.push(b);
+        }
+    }
+
+    let compressed = compress_image_rgb(width, height, &pixels).unwrap();
+    println!("RGB image (64x64x3): raw {} B -> compressed {} B ({:.2}x)",
+             pixels.len(), compressed.len(), pixels.len() as f64 / compressed.len() as f64);
+    assert!(compressed.len() < pixels.len());
+
+    let (dec_w, dec_h, dec_pixels) = decompress_image_rgb(&compressed).unwrap();
+    assert_eq!(dec_w, width);
+    assert_eq!(dec_h, height);
+    assert_eq!(dec_pixels, pixels);
+}

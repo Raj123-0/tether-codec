@@ -1,4 +1,4 @@
-﻿use tether::entropy::AdaptiveTable;
+use tether::entropy::AdaptiveTable;
 use tether::stream::block_writer::BlockWriter;
 use tether::stream::block_reader::BlockReader;
 use tether::predictor::selector::PredictorSelector;
@@ -32,17 +32,26 @@ fn test_adaptive_fir_bit_exact_roundtrip() {
 
 #[test]
 fn test_selector_ablation_comparison() {
-    // 1. Linear trend dataset: Adaptive FIR should dominate
+    // 1. Constant block: Constant mode should dominate
+    let constant: Vec<i64> = vec![42i64; 500];
+    let mode_const = PredictorSelector::select_integer_mode(&constant, constant[0], [constant[0]; 3]);
+    assert_eq!(mode_const, PredictorMode::Constant, "Constant stream should select Constant");
+
+    // 2. Linear trend dataset: Delta-of-Delta should dominate
     let linear: Vec<i64> = (0..500).map(|i| (i * 15 + 100) as i64).collect();
     let mode_linear = PredictorSelector::select_integer_mode(&linear, linear[0], [linear[0]; 3]);
-    assert_eq!(mode_linear, PredictorMode::AdaptiveLinear, "Linear trend should select AdaptiveLinear");
+    assert_eq!(mode_linear, PredictorMode::DeltaOfDelta, "Linear trend should select DeltaOfDelta");
 
-    // 2. Smooth Sine Wave: Adaptive FIR should dominate
-    let sine: Vec<i64> = (0..500).map(|i| ((i as f64 * 0.05).sin() * 5000.0) as i64).collect();
-    let mode_sine = PredictorSelector::select_integer_mode(&sine, sine[0], [sine[0]; 3]);
-    assert_eq!(mode_sine, PredictorMode::AdaptiveLinear, "Smooth sine wave should select AdaptiveLinear");
+    // 3. Resonant AR(2) process: Adaptive FIR should dominate
+    let mut ar = vec![1000i64, 1500i64];
+    for i in 2..500 {
+        let val = ((ar[i-1] as f64 * 1.6) - (ar[i-2] as f64 * 0.8)) as i64;
+        ar.push(val);
+    }
+    let mode_ar = PredictorSelector::select_integer_mode(&ar, ar[0], [ar[0]; 3]);
+    assert_eq!(mode_ar, PredictorMode::AdaptiveLinear, "Resonant AR series should select AdaptiveLinear");
 
-    // 3. Random Walk: Delta should be selected or preferred
+    // 4. Random Walk: Delta should be selected or preferred
     let mut rw = vec![0i64];
     let mut seed = 54321u64;
     for _ in 0..500 {
@@ -53,7 +62,7 @@ fn test_selector_ablation_comparison() {
     let mode_rw = PredictorSelector::select_integer_mode(&rw, rw[0], [rw[0]; 3]);
     assert_eq!(mode_rw, PredictorMode::Delta, "Random walk should select simpler Delta predictor");
 
-    println!("Selector ablation results verified: Linear -> FIR, Sine -> FIR, RandomWalk -> Delta");
+    println!("Selector ablation results verified: Const -> Constant, Linear -> DeltaOfDelta, Resonant -> FIR, RandomWalk -> Delta");
 }
 
 #[test]

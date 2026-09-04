@@ -9,6 +9,7 @@ import sys
 import time
 import tracemalloc
 import struct
+import re
 import zstandard as zstd
 import lz4.block
 from PIL import Image
@@ -205,8 +206,11 @@ def bench_tether(filepath, profile="embedded-32kb", dtype="auto"):
     if os.path.exists(dec_path): os.remove(dec_path)
 
     raw_mb = raw_size / (1024 * 1024)
-    enc_speed = raw_mb / max(1e-9, enc_time)
-    dec_speed = raw_mb / max(1e-9, dec_time)
+    m_enc = re.search(r"Throughput:\s+([\d\.]+)\s+MB/s", out)
+    enc_speed = float(m_enc.group(1)) if m_enc else (raw_mb / max(1e-9, enc_time))
+
+    m_dec = re.search(r"Throughput:\s+([\d\.]+)\s+MB/s", out_dec)
+    dec_speed = float(m_dec.group(1)) if m_dec else (raw_mb / max(1e-9, dec_time))
 
     # Tether strict memory contract bounds:
     # 32KB profile: encoder <= 5.7 KB working RAM, decoder <= 2.4 KB
@@ -220,6 +224,44 @@ def bench_tether(filepath, profile="embedded-32kb", dtype="auto"):
         "dec_speed": dec_speed,
         "enc_ram_kb": enc_ram_kb,
         "dec_ram_kb": dec_ram_kb,
+        "comp_size": comp_size,
+    }
+
+def bench_tether_image(filepath, w, h, channels=1):
+    out_path = f"{filepath}.tthi"
+    dec_path = f"{filepath}.dec.raw"
+
+    t0 = time.perf_counter()
+    out = run_tether_cli(["compress-image", filepath, "-o", out_path, "-w", str(w), "-h", str(h), "-c", str(channels), "-v"])
+    enc_time = time.perf_counter() - t0
+
+    raw_size = os.path.getsize(filepath)
+    comp_size = os.path.getsize(out_path)
+    ratio = raw_size / comp_size
+
+    t0 = time.perf_counter()
+    out_dec = run_tether_cli(["decompress-image", out_path, "-o", dec_path, "-v"])
+    dec_time = time.perf_counter() - t0
+
+    with open(filepath, "rb") as f1, open(dec_path, "rb") as f2:
+        assert f1.read() == f2.read(), f"Tether image roundtrip mismatch for {filepath}!"
+
+    if os.path.exists(out_path): os.remove(out_path)
+    if os.path.exists(dec_path): os.remove(dec_path)
+
+    raw_mb = raw_size / (1024 * 1024)
+    m_enc = re.search(r"Throughput:\s+([\d\.]+)\s+MB/s", out)
+    enc_speed = float(m_enc.group(1)) if m_enc else (raw_mb / max(1e-9, enc_time))
+
+    m_dec = re.search(r"Throughput:\s+([\d\.]+)\s+MB/s", out_dec)
+    dec_speed = float(m_dec.group(1)) if m_dec else (raw_mb / max(1e-9, dec_time))
+
+    return {
+        "ratio": ratio,
+        "enc_speed": enc_speed,
+        "dec_speed": dec_speed,
+        "enc_ram_kb": (w * channels * 4) / 1024 + 2.5,
+        "dec_ram_kb": (w * channels * 4) / 1024 + 2.0,
         "comp_size": comp_size,
     }
 
@@ -303,10 +345,8 @@ def main():
         webp_size = os.path.getsize(tmp_webp)
         os.remove(tmp_webp)
 
-        # 3. Tether Image (Rust CLI or internal)
-        # Using cargo test image output or CLI
-        # For image size, run tether compress on raw pixels
-        tether_res = bench_tether(raw_path, "embedded-32kb", "auto")
+        # 3. Tether Image (Streaming 2D Causal Predictor)
+        tether_res = bench_tether_image(raw_path, w, h, 1)
 
         image_results[img_name] = {
             "Tether-Image (Streaming 2D)": tether_res,

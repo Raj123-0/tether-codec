@@ -1,8 +1,10 @@
 // Block framing writer for compressed and raw blocks.
 
+// Block framing writer for compressed and raw blocks.
+
 use crate::Vec;
 use crate::entropy::{AdaptiveTable, RansEncoder};
-use crate::predictor::delta_xor::{encode_delta_i64_block, encode_xor_u64_block};
+use crate::predictor::delta_xor::{encode_delta_i64_block, encode_delta2_i64_block, encode_xor_u64_block};
 use crate::predictor::adaptive_linear::encode_adaptive_fir_block;
 use crate::predictor::selector::PredictorSelector;
 use crate::predictor::PredictorMode;
@@ -11,7 +13,8 @@ use crate::stream::bitstream::BitWriter;
 pub struct BlockWriter;
 
 impl BlockWriter {
-    /// Write an integer block automatically selecting the best predictor (Delta vs Adaptive Linear FIR).
+    /// Write an integer block automatically selecting the best predictor
+    /// (Constant vs DeltaOfDelta vs Adaptive Linear FIR vs Delta).
     pub fn write_auto_i64_block(
         samples: &[i64],
         initial_sample: i64,
@@ -25,6 +28,20 @@ impl BlockWriter {
 
         let mode = PredictorSelector::select_integer_mode(samples, initial_sample, initial_history);
         match mode {
+            PredictorMode::Constant => {
+                Self::write_constant_block(samples.len(), samples[0] as u64, out);
+                let first = samples[0];
+                (first, [first, first, first])
+            }
+            PredictorMode::DeltaOfDelta => {
+                Self::write_delta2_i64_block(samples, initial_history[0], initial_history[1], table, out);
+                let last_val = *samples.last().unwrap();
+                let len = samples.len();
+                let h0 = last_val;
+                let h1 = if len > 1 { samples[len - 2] } else { initial_history[0] };
+                let h2 = if len > 2 { samples[len - 3] } else { initial_history[1] };
+                (last_val, [h0, h1, h2])
+            }
             PredictorMode::AdaptiveLinear => {
                 let new_hist = Self::write_adaptive_fir_block(samples, initial_history, table, out);
                 let last_val = *samples.last().unwrap();
@@ -42,6 +59,13 @@ impl BlockWriter {
         }
     }
 
+    /// Write an 11-byte constant block (mode: 4, count: u16, val: u64).
+    pub fn write_constant_block(count: usize, val: u64, out: &mut Vec<u8>) {
+        out.push(PredictorMode::Constant as u8);
+        out.extend_from_slice(&(count as u16).to_le_bytes());
+        out.extend_from_slice(&val.to_le_bytes());
+    }
+
     /// Write a block using integer delta prediction + rANS.
     pub fn write_delta_i64_block(
         samples: &[i64],
@@ -50,6 +74,13 @@ impl BlockWriter {
         out: &mut Vec<u8>,
     ) {
         if samples.is_empty() {
+            return;
+        }
+
+        // Fast path for constant block
+        let first = samples[0];
+        if samples.iter().all(|&x| x == first) {
+            Self::write_constant_block(samples.len(), first as u64, out);
             return;
         }
 
@@ -65,7 +96,7 @@ impl BlockWriter {
         let rans_payload = rans.finish();
 
         let raw_size = samples.len() * 8;
-        let compressed_size = 1 + 2 + 2 + 2 + 8 + extra_bytes.len() + rans_payload.len();
+        let compressed_size = 1 + 2 + 2 + 2 + 2 + 8 + extra_bytes.len() + rans_payload.len();
 
         if compressed_size >= raw_size {
             let u64_slice = unsafe { core::slice::from_raw_parts(samples.as_ptr() as *const u64, samples.len()) };
@@ -80,9 +111,65 @@ impl BlockWriter {
 
         out.push(PredictorMode::Delta as u8);
         out.extend_from_slice(&(samples.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(symbols.len() as u16).to_le_bytes());
         out.extend_from_slice(&(extra_bytes.len() as u16).to_le_bytes());
         out.extend_from_slice(&(rans_payload.len() as u16).to_le_bytes());
         out.extend_from_slice(&initial_sample.to_le_bytes());
+
+        out.extend_from_slice(&extra_bytes);
+        out.extend_from_slice(&rans_payload);
+    }
+
+    /// Write a block using Delta-of-Delta (second difference) prediction + rANS.
+    pub fn write_delta2_i64_block(
+        samples: &[i64],
+        prev1: i64,
+        prev2: i64,
+        table: &mut AdaptiveTable,
+        out: &mut Vec<u8>,
+    ) {
+        if samples.is_empty() {
+            return;
+        }
+
+        // Fast path for constant block
+        let first = samples[0];
+        if samples.iter().all(|&x| x == first) {
+            Self::write_constant_block(samples.len(), first as u64, out);
+            return;
+        }
+
+        let mut symbols = Vec::with_capacity(samples.len());
+        let mut bit_writer = BitWriter::with_capacity(samples.len() * 4);
+
+        encode_delta2_i64_block(samples, prev1, prev2, &mut symbols, &mut bit_writer);
+
+        let extra_bytes = bit_writer.finish();
+
+        let mut rans = RansEncoder::new();
+        rans.encode_block(&symbols, table);
+        let rans_payload = rans.finish();
+
+        let raw_size = samples.len() * 8;
+        let compressed_size = 1 + 2 + 2 + 2 + 2 + 16 + extra_bytes.len() + rans_payload.len();
+
+        if compressed_size >= raw_size {
+            let u64_slice = unsafe { core::slice::from_raw_parts(samples.as_ptr() as *const u64, samples.len()) };
+            Self::write_raw_u64_block(u64_slice, out);
+            return;
+        }
+
+        for &s in &symbols {
+            table.observe(s);
+        }
+
+        out.push(PredictorMode::DeltaOfDelta as u8);
+        out.extend_from_slice(&(samples.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(symbols.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(extra_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(rans_payload.len() as u16).to_le_bytes());
+        out.extend_from_slice(&prev1.to_le_bytes());
+        out.extend_from_slice(&prev2.to_le_bytes());
 
         out.extend_from_slice(&extra_bytes);
         out.extend_from_slice(&rans_payload);
@@ -110,7 +197,7 @@ impl BlockWriter {
         let rans_payload = rans.finish();
 
         let raw_size = samples.len() * 8;
-        let compressed_size = 1 + 2 + 2 + 2 + 24 + extra_bytes.len() + rans_payload.len();
+        let compressed_size = 1 + 2 + 2 + 2 + 2 + 24 + extra_bytes.len() + rans_payload.len();
 
         if compressed_size >= raw_size {
             let u64_slice = unsafe { core::slice::from_raw_parts(samples.as_ptr() as *const u64, samples.len()) };
@@ -118,13 +205,13 @@ impl BlockWriter {
             return new_history;
         }
 
-        // Only update table if block is actually written as compressed!
         for &s in &symbols {
             table.observe(s);
         }
 
         out.push(PredictorMode::AdaptiveLinear as u8);
         out.extend_from_slice(&(samples.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(symbols.len() as u16).to_le_bytes());
         out.extend_from_slice(&(extra_bytes.len() as u16).to_le_bytes());
         out.extend_from_slice(&(rans_payload.len() as u16).to_le_bytes());
         out.extend_from_slice(&initial_history[0].to_le_bytes());
@@ -148,6 +235,13 @@ impl BlockWriter {
             return;
         }
 
+        // Fast path for constant float / word block
+        let first = samples[0];
+        if samples.iter().all(|&x| x == first) {
+            Self::write_constant_block(samples.len(), first, out);
+            return;
+        }
+
         let mut symbols = Vec::with_capacity(samples.len());
         let mut bit_writer = BitWriter::with_capacity(samples.len() * 4);
 
@@ -160,20 +254,20 @@ impl BlockWriter {
         let rans_payload = rans.finish();
 
         let raw_size = samples.len() * 8;
-        let compressed_size = 1 + 2 + 2 + 2 + 8 + extra_bytes.len() + rans_payload.len();
+        let compressed_size = 1 + 2 + 2 + 2 + 2 + 8 + extra_bytes.len() + rans_payload.len();
 
         if compressed_size >= raw_size {
             Self::write_raw_u64_block(samples, out);
             return;
         }
 
-        // Only update table if block is actually written as compressed!
         for &s in &symbols {
             table.observe(s);
         }
 
         out.push(PredictorMode::Xor as u8);
         out.extend_from_slice(&(samples.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(symbols.len() as u16).to_le_bytes());
         out.extend_from_slice(&(extra_bytes.len() as u16).to_le_bytes());
         out.extend_from_slice(&(rans_payload.len() as u16).to_le_bytes());
         out.extend_from_slice(&initial_sample.to_le_bytes());

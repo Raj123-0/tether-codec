@@ -2,7 +2,7 @@ use crate::Vec;
 // Lightweight integer-only adaptive linear predictor (Order-3 FIR with sign-sign LMS).
 // Zero floating-point operations, zero division, fixed small state (36 bytes).
 
-use crate::predictor::delta_xor::{classify_residual_u64, reconstruct_residual_u64, zigzag_encode_i64, zigzag_decode_i64};
+use crate::predictor::delta_xor::{pack_residuals, unpack_residuals, zigzag_encode_i64, zigzag_decode_i64};
 use crate::stream::bitstream::{BitReader, BitWriter};
 
 pub const FIR_SCALE_SHIFT: u32 = 8;
@@ -54,7 +54,7 @@ impl AdaptiveLinearPredictor {
     }
 }
 
-/// Encode a block using the adaptive linear FIR predictor.
+/// Encode a block using the adaptive linear FIR predictor with Zero-Run packing.
 pub fn encode_adaptive_fir_block(
     samples: &[i64],
     initial_history: [i64; 3],
@@ -62,15 +62,14 @@ pub fn encode_adaptive_fir_block(
     writer: &mut BitWriter,
 ) -> [i64; 3] {
     let mut fir = AdaptiveLinearPredictor::new(initial_history);
+    let mut residuals = Vec::with_capacity(samples.len());
     for &val in samples {
         let pred = fir.predict();
         let err = val.wrapping_sub(pred);
-        let z = zigzag_encode_i64(err);
-        let (sym, extra_count, extra_val) = classify_residual_u64(z);
-        symbols_out.push(sym);
-        writer.write_bits(extra_val, extra_count);
+        residuals.push(zigzag_encode_i64(err));
         fir.update(val, pred);
     }
+    pack_residuals(&residuals, symbols_out, writer);
     fir.history
 }
 
@@ -79,16 +78,18 @@ pub fn decode_adaptive_fir_block(
     symbols: &[u8],
     initial_history: [i64; 3],
     reader: &mut BitReader,
+    target_count: usize,
     samples_out: &mut Vec<i64>,
-) -> [i64; 3] {
+) -> Result<[i64; 3], &'static str> {
+    let mut residuals = Vec::with_capacity(target_count);
+    unpack_residuals(symbols, reader, target_count, &mut residuals)?;
     let mut fir = AdaptiveLinearPredictor::new(initial_history);
-    for &sym in symbols {
-        let z = reconstruct_residual_u64(sym, reader);
+    for z in residuals {
         let err = zigzag_decode_i64(z);
         let pred = fir.predict();
         let val = pred.wrapping_add(err);
         samples_out.push(val);
         fir.update(val, pred);
     }
-    fir.history
+    Ok(fir.history)
 }

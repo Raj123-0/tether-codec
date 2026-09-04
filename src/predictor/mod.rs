@@ -9,6 +9,8 @@ pub enum PredictorMode {
     Delta = 1,
     Xor = 2,
     AdaptiveLinear = 3,
+    Constant = 4,
+    DeltaOfDelta = 5,
 }
 
 impl PredictorMode {
@@ -18,6 +20,8 @@ impl PredictorMode {
             1 => Some(Self::Delta),
             2 => Some(Self::Xor),
             3 => Some(Self::AdaptiveLinear),
+            4 => Some(Self::Constant),
+            5 => Some(Self::DeltaOfDelta),
             _ => None,
         }
     }

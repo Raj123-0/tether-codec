@@ -8,8 +8,8 @@ pub struct PredictorSelector;
 impl PredictorSelector {
     /// Select the best predictor mode for an integer slice.
     ///
-    /// Evaluates sum of absolute residuals for Delta vs Adaptive FIR.
-    /// Prefers the simpler Delta predictor unless Adaptive FIR outperforms it by >= 5%.
+    /// Checks for Constant block first, then evaluates sum of absolute residuals
+    /// for Delta, Delta-of-Delta, and Adaptive FIR.
     pub fn select_integer_mode(
         samples: &[i64],
         prev_sample: i64,
@@ -19,7 +19,13 @@ impl PredictorSelector {
             return PredictorMode::Delta;
         }
 
-        // 1. Evaluate Delta
+        // 1. Evaluate Constant
+        let first = samples[0];
+        if samples.iter().all(|&x| x == first) {
+            return PredictorMode::Constant;
+        }
+
+        // 2. Evaluate Delta
         let mut delta_score = 0u64;
         let mut prev = prev_sample;
         for &val in samples {
@@ -28,7 +34,19 @@ impl PredictorSelector {
             prev = val;
         }
 
-        // 2. Evaluate Adaptive Linear FIR
+        // 3. Evaluate Delta-of-Delta (second difference)
+        let mut delta2_score = 0u64;
+        let mut p1 = history[0];
+        let mut p2 = history[1];
+        for &val in samples {
+            let pred = p1.wrapping_add(p1.wrapping_sub(p2));
+            let diff = val.wrapping_sub(pred);
+            delta2_score = delta2_score.saturating_add(diff.unsigned_abs());
+            p2 = p1;
+            p1 = val;
+        }
+
+        // 4. Evaluate Adaptive Linear FIR
         let mut fir_score = 0u64;
         let mut fir = AdaptiveLinearPredictor::new(history);
         for &val in samples {
@@ -38,8 +56,11 @@ impl PredictorSelector {
             fir.update(val, pred);
         }
 
-        // 3. Selection rule: FIR must beat Delta by at least 5%
-        if (fir_score as u128 * 100) < (delta_score as u128 * 95) {
+        // 5. Selection rule
+        // Prefer DeltaOfDelta if it beats Delta by >= 5% and is at least as good as FIR
+        if (delta2_score as u128 * 100) < (delta_score as u128 * 95) && delta2_score <= fir_score {
+            PredictorMode::DeltaOfDelta
+        } else if (fir_score as u128 * 100) < (delta_score as u128 * 95) && fir_score < delta2_score {
             PredictorMode::AdaptiveLinear
         } else {
             PredictorMode::Delta
