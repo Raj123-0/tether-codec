@@ -60,3 +60,9 @@ impl RansEncoder {
         out
     }
 }
+
+impl Default for RansEncoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}

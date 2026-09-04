@@ -41,14 +41,14 @@ impl AdaptiveTable {
         raw[1] = 64;
         raw[2] = 32;
         raw[3] = 16;
-        for i in 4..16 {
-            raw[i] = 8;
+        for item in raw[4..16].iter_mut() {
+            *item = 8;
         }
-        for i in 16..64 {
-            raw[i] = 4;
+        for item in raw[16..64].iter_mut() {
+            *item = 4;
         }
-        for i in 64..128 {
-            raw[i] = 2;
+        for item in raw[64..128].iter_mut() {
+            *item = 2;
         }
         let total: u32 = raw.iter().map(|&x| x as u32).sum();
         let mut table = Self {
@@ -114,7 +114,7 @@ impl AdaptiveTable {
 
         let mut remainders: [(u32, u8); ALPHABET_SIZE] = [(0, 0); ALPHABET_SIZE];
 
-        for i in 0..ALPHABET_SIZE {
+        for (i, rem) in remainders.iter_mut().enumerate().take(ALPHABET_SIZE) {
             let c = self.raw_counts[i] as u32;
             let prod = c * rem_target;
             let add = prod / total_raw;
@@ -122,14 +122,14 @@ impl AdaptiveTable {
 
             self.freq[i] = (1 + add) as u16;
             allocated += add;
-            remainders[i] = (r, i as u8);
+            *rem = (r, i as u8);
         }
 
         let leftover = (rem_target - allocated) as usize;
         if leftover > 0 {
             remainders.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
-            for k in 0..leftover.min(ALPHABET_SIZE) {
-                let idx = remainders[k].1 as usize;
+            for item in remainders.iter().take(leftover.min(ALPHABET_SIZE)) {
+                let idx = item.1 as usize;
                 self.freq[idx] += 1;
             }
         }
@@ -146,5 +146,11 @@ impl AdaptiveTable {
         }
         self.cum[ALPHABET_SIZE] = current_cum;
         debug_assert_eq!(current_cum as u32, TOTAL_FREQ);
+    }
+}
+
+impl Default for AdaptiveTable {
+    fn default() -> Self {
+        Self::new_skewed()
     }
 }

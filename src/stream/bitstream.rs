@@ -94,3 +94,9 @@ impl<'a> BitReader<'a> {
         val
     }
 }
+
+impl Default for BitWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}

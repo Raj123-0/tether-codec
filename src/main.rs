@@ -116,16 +116,16 @@ fn main() {
                 "f64" if input_bytes.len() % 8 == 0 => {
                     let num_f = input_bytes.len() / 8;
                     let mut f_slice = Vec::with_capacity(num_f);
-                    for chunk in input_bytes.chunks_exact(8) {
-                        f_slice.push(f64::from_le_bytes(chunk.try_into().unwrap()));
+                    for chunk in input_bytes.as_chunks::<8>().0 {
+                        f_slice.push(f64::from_le_bytes(*chunk));
                     }
                     compress_f64(&f_slice, budget)
                 }
                 "i64" if input_bytes.len() % 8 == 0 => {
                     let num_i = input_bytes.len() / 8;
                     let mut i_slice = Vec::with_capacity(num_i);
-                    for chunk in input_bytes.chunks_exact(8) {
-                        i_slice.push(i64::from_le_bytes(chunk.try_into().unwrap()));
+                    for chunk in input_bytes.as_chunks::<8>().0 {
+                        i_slice.push(i64::from_le_bytes(*chunk));
                     }
                     compress_i64(&i_slice, budget)
                 }
