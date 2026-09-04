@@ -11,6 +11,9 @@ pub enum PredictorMode {
     AdaptiveLinear = 3,
     Constant = 4,
     DeltaOfDelta = 5,
+    LinearRamp = 6,
+    RepeatHistory = 7,
+    DecimalFloat = 8,
 }
 
 impl PredictorMode {
@@ -22,6 +25,9 @@ impl PredictorMode {
             3 => Some(Self::AdaptiveLinear),
             4 => Some(Self::Constant),
             5 => Some(Self::DeltaOfDelta),
+            6 => Some(Self::LinearRamp),
+            7 => Some(Self::RepeatHistory),
+            8 => Some(Self::DecimalFloat),
             _ => None,
         }
     }

@@ -157,7 +157,7 @@ impl AdaptiveTable {
             // Precompute reciprocal multiplication parameters for division-free rANS
             let f_u32 = f as u32;
             let shift = 31 + (32 - (f_u32 - 1).leading_zeros() as u8);
-            self.rcp_freq[i] = (((1u64 << shift) + (f_u32 as u64) - 1) / (f_u32 as u64)) as u32;
+            self.rcp_freq[i] = ((1u64 << shift).div_ceil(f_u32 as u64)) as u32;
             self.rcp_shift[i] = shift;
         }
         self.cum[ALPHABET_SIZE] = current_cum;

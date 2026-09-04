@@ -37,10 +37,15 @@ fn test_selector_ablation_comparison() {
     let mode_const = PredictorSelector::select_integer_mode(&constant, constant[0], [constant[0]; 3]);
     assert_eq!(mode_const, PredictorMode::Constant, "Constant stream should select Constant");
 
-    // 2. Linear trend dataset: Delta-of-Delta should dominate
+    // 2. Linear ramp dataset: LinearRamp mode should dominate
     let linear: Vec<i64> = (0..500).map(|i| (i * 15 + 100) as i64).collect();
     let mode_linear = PredictorSelector::select_integer_mode(&linear, linear[0], [linear[0]; 3]);
-    assert_eq!(mode_linear, PredictorMode::DeltaOfDelta, "Linear trend should select DeltaOfDelta");
+    assert_eq!(mode_linear, PredictorMode::LinearRamp, "Linear ramp should select LinearRamp");
+
+    // 2b. Quadratic polynomial dataset: Delta-of-Delta should dominate
+    let quadratic: Vec<i64> = (0..500).map(|i| (i * i * 3 + i * 5 + 10) as i64).collect();
+    let mode_quad = PredictorSelector::select_integer_mode(&quadratic, quadratic[0], [quadratic[0]; 3]);
+    assert_eq!(mode_quad, PredictorMode::DeltaOfDelta, "Quadratic trend should select DeltaOfDelta");
 
     // 3. Resonant AR(2) process: Adaptive FIR should dominate
     let mut ar = vec![1000i64, 1500i64];

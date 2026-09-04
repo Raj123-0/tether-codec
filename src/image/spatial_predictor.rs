@@ -209,7 +209,7 @@ pub fn unpack_8bit_residuals(
         } else if sym < 128 {
             residuals_out.push(sym);
         } else {
-            let base = 128 + (((sym - 128) as u8) << 1);
+            let base = 128 + ((sym - 128) << 1);
             let bit = reader.read_bits(1) as u8;
             residuals_out.push(base | bit);
         }
@@ -279,14 +279,15 @@ fn encode_channel_row(
     prev_row.extend_from_slice(curr_row);
 }
 
-/// Decode a single 8-bit image channel row.
-fn decode_channel_row(
+/// Decode a single 8-bit image channel row with run repeat support.
+fn decode_channel_row_repeat(
     w: usize,
     compressed: &[u8],
     offset: &mut usize,
     prev_row: &mut Vec<u8>,
     table: &mut AdaptiveTable,
     curr_row: &mut Vec<u8>,
+    remaining_repeats: &mut usize,
 ) -> Result<(), &'static str> {
     if *offset + 5 > compressed.len() {
         return Err("Truncated image row header");
@@ -302,6 +303,9 @@ fn decode_channel_row(
         FilterType::RepeatPrev => {
             if prev_row.len() != w {
                 return Err("RepeatPrev on first row or mismatched width");
+            }
+            if payload_len > 1 {
+                *remaining_repeats = payload_len - 1;
             }
             curr_row.clear();
             curr_row.extend_from_slice(prev_row);
@@ -368,7 +372,73 @@ fn decode_channel_row(
     Ok(())
 }
 
-/// Compress an 8-bit image row-by-row in streaming mode.
+/// Decode a single 8-bit image channel row (calls repeat decoder with 0 remaining).
+fn decode_channel_row(
+    w: usize,
+    compressed: &[u8],
+    offset: &mut usize,
+    prev_row: &mut Vec<u8>,
+    table: &mut AdaptiveTable,
+    curr_row: &mut Vec<u8>,
+) -> Result<(), &'static str> {
+    let mut dummy = 0;
+    decode_channel_row_repeat(w, compressed, offset, prev_row, table, curr_row, &mut dummy)
+}
+
+/// Encode rows of an 8-bit image with RepeatPrev run-length acceleration and optional palette mapping.
+fn encode_grayscale_stream(
+    pixels: &[u8],
+    w: usize,
+    h: usize,
+    lut: Option<&[u8; 256]>,
+    out: &mut Vec<u8>,
+) {
+    let mut prev_row: Vec<u8> = Vec::new();
+    let mut table = AdaptiveTable::new_skewed();
+    let mut row_residuals = Vec::with_capacity(w);
+    let mut mapped_row = Vec::with_capacity(w);
+
+    let mut y = 0;
+    while y < h {
+        let curr_raw = &pixels[y * w..(y + 1) * w];
+        let curr_slice: &[u8] = if let Some(lut) = lut {
+            mapped_row.clear();
+            for &b in curr_raw {
+                mapped_row.push(lut[b as usize]);
+            }
+            &mapped_row
+        } else {
+            curr_raw
+        };
+
+        // Check RepeatPrev run
+        if !prev_row.is_empty() && curr_slice == prev_row.as_slice() {
+            let mut run = 0;
+            while y < h {
+                let next_raw = &pixels[y * w..(y + 1) * w];
+                let matches = if let Some(lut) = lut {
+                    next_raw.iter().enumerate().all(|(i, &b)| lut[b as usize] == prev_row[i])
+                } else {
+                    next_raw == prev_row.as_slice()
+                };
+                if matches {
+                    run += 1;
+                    y += 1;
+                } else {
+                    break;
+                }
+            }
+            out.push(FilterType::RepeatPrev as u8);
+            out.extend_from_slice(&(run as u32).to_le_bytes());
+            continue;
+        }
+
+        encode_channel_row(curr_slice, &mut prev_row, &mut table, &mut row_residuals, out);
+        y += 1;
+    }
+}
+
+/// Compress an 8-bit image row-by-row in streaming mode with Auto-Palette support.
 /// Memory consumption is O(width), strictly bounded regardless of image height.
 pub fn compress_image_grayscale(
     width: u32,
@@ -379,22 +449,64 @@ pub fn compress_image_grayscale(
         return Err("Pixel buffer length does not match width * height");
     }
 
+    let w = width as usize;
+    let h = height as usize;
+
+    // Check for small palette (<= 16 unique colors, common in UI/charts)
+    let mut seen = [false; 256];
+    let mut palette = Vec::with_capacity(16);
+    let mut too_many = false;
+    for &p in pixels {
+        if !seen[p as usize] {
+            seen[p as usize] = true;
+            palette.push(p);
+            if palette.len() > 16 {
+                too_many = true;
+                break;
+            }
+        }
+    }
+
+    if !too_many && palette.len() >= 2 && palette.len() <= 16 {
+        palette.sort_unstable();
+        let mut lut = [0u8; 256];
+        for (i, &c) in palette.iter().enumerate() {
+            lut[c as usize] = i as u8;
+        }
+
+        let mut indexed_out = Vec::with_capacity(pixels.len() / 4 + 64);
+        indexed_out.extend_from_slice(b"TTHI");
+        indexed_out.extend_from_slice(&width.to_le_bytes());
+        indexed_out.extend_from_slice(&height.to_le_bytes());
+        indexed_out.push(0x81); // 1 channel with palette
+        indexed_out.push(palette.len() as u8);
+        indexed_out.extend_from_slice(&palette);
+
+        encode_grayscale_stream(pixels, w, h, Some(&lut), &mut indexed_out);
+
+        // Direct encoding comparison
+        let mut direct_out = Vec::with_capacity(pixels.len() / 2 + 64);
+        direct_out.extend_from_slice(b"TTHI");
+        direct_out.extend_from_slice(&width.to_le_bytes());
+        direct_out.extend_from_slice(&height.to_le_bytes());
+        direct_out.push(1);
+
+        encode_grayscale_stream(pixels, w, h, None, &mut direct_out);
+
+        if indexed_out.len() <= direct_out.len() {
+            return Ok(indexed_out);
+        } else {
+            return Ok(direct_out);
+        }
+    }
+
     let mut out = Vec::with_capacity(pixels.len() / 2 + 64);
     out.extend_from_slice(b"TTHI");
     out.extend_from_slice(&width.to_le_bytes());
     out.extend_from_slice(&height.to_le_bytes());
     out.push(1); // 1 channel
 
-    let w = width as usize;
-    let mut prev_row: Vec<u8> = Vec::new();
-    let mut row_residuals = Vec::with_capacity(w);
-    let mut table = AdaptiveTable::new_skewed();
-
-    for y in 0..height as usize {
-        let curr_row = &pixels[y * w..(y + 1) * w];
-        encode_channel_row(curr_row, &mut prev_row, &mut table, &mut row_residuals, &mut out);
-    }
-
+    encode_grayscale_stream(pixels, w, h, None, &mut out);
     Ok(out)
 }
 
@@ -408,9 +520,25 @@ pub fn decompress_image_grayscale(
 
     let width = u32::from_le_bytes(compressed[4..8].try_into().unwrap());
     let height = u32::from_le_bytes(compressed[8..12].try_into().unwrap());
-    let channels = compressed[12];
-    if channels != 1 {
+    let channels_byte = compressed[12];
+    if channels_byte != 1 && channels_byte != 0x81 {
         return Err("Expected 1-channel grayscale image");
+    }
+
+    let is_palette = channels_byte == 0x81;
+    let mut offset = 13;
+    let mut palette = Vec::new();
+    if is_palette {
+        if offset >= compressed.len() {
+            return Err("Truncated palette header");
+        }
+        let pal_len = compressed[offset] as usize;
+        offset += 1;
+        if offset + pal_len > compressed.len() {
+            return Err("Truncated palette entries");
+        }
+        palette.extend_from_slice(&compressed[offset..offset + pal_len]);
+        offset += pal_len;
     }
 
     let w = width as usize;
@@ -419,10 +547,25 @@ pub fn decompress_image_grayscale(
     let mut prev_row: Vec<u8> = Vec::new();
     let mut table = AdaptiveTable::new_skewed();
     let mut curr_row = Vec::with_capacity(w);
+    let mut remaining_repeats = 0;
 
-    let mut offset = 13;
     for _ in 0..h {
-        decode_channel_row(w, compressed, &mut offset, &mut prev_row, &mut table, &mut curr_row)?;
+        if remaining_repeats > 0 {
+            remaining_repeats -= 1;
+            curr_row.clear();
+            curr_row.extend_from_slice(&prev_row);
+        } else {
+            decode_channel_row_repeat(w, compressed, &mut offset, &mut prev_row, &mut table, &mut curr_row, &mut remaining_repeats)?;
+        }
+        if is_palette {
+            for b in curr_row.iter_mut() {
+                let idx = *b as usize;
+                if idx >= palette.len() {
+                    return Err("Palette index out of bounds");
+                }
+                *b = palette[idx];
+            }
+        }
         pixels.extend_from_slice(&curr_row);
     }
 
@@ -558,7 +701,7 @@ pub fn decompress_image(
     }
     let channels = compressed[12];
     match channels {
-        1 => {
+        1 | 0x81 => {
             let (w, h, p) = decompress_image_grayscale(compressed)?;
             Ok((w, h, 1, p))
         }

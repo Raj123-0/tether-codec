@@ -150,15 +150,29 @@ def bench_gorilla(data):
     
     tracemalloc.start()
     t0 = time.perf_counter()
-    # Simple Gorilla bit-length approximation
+    # Canonical Gorilla bit-length calculation (VLDB 2015 specification)
+    def count_trailing_zeros(v):
+        if v == 0: return 64
+        return (v & -v).bit_length() - 1
+
     total_bits = 64
     prev = words[0]
+    prev_lz = None
+    prev_tz = None
     for w in words[1:]:
         diff = w ^ prev
         if diff == 0:
             total_bits += 1
         else:
-            total_bits += 2 + (64 - diff.bit_length())
+            lz = 64 - diff.bit_length()
+            tz = count_trailing_zeros(diff)
+            if prev_lz is not None and lz >= prev_lz and tz >= prev_tz:
+                total_bits += 2 + (64 - prev_lz - prev_tz)
+            else:
+                prev_lz = min(lz, 31) # 5 bits for leading zeros (up to 31)
+                prev_tz = tz
+                meaningful_len = 64 - prev_lz - prev_tz
+                total_bits += 2 + 5 + 6 + meaningful_len
         prev = w
     enc_time = time.perf_counter() - t0
     enc_peak_ram = tracemalloc.get_traced_memory()[1]

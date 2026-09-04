@@ -25,6 +25,14 @@ impl PredictorSelector {
             return PredictorMode::Constant;
         }
 
+        // 2. Evaluate Linear Ramp (constant first difference)
+        if samples.len() >= 2 {
+            let delta = samples[1].wrapping_sub(samples[0]);
+            if delta != 0 && samples.windows(2).all(|w| w[1].wrapping_sub(w[0]) == delta) {
+                return PredictorMode::LinearRamp;
+            }
+        }
+
         // 2. Evaluate Delta
         let mut delta_score = 0u64;
         let mut prev = prev_sample;

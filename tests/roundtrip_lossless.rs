@@ -1,4 +1,4 @@
-﻿use tether::entropy::AdaptiveTable;
+use tether::entropy::AdaptiveTable;
 use tether::stream::block_writer::BlockWriter;
 use tether::stream::block_reader::BlockReader;
 
@@ -199,5 +199,62 @@ fn test_roundtrip_flat_ui_raw() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn test_roundtrip_linear_ramp_mode() {
+    let n = 2560;
+    let original: Vec<i64> = (0..n).map(|i| 1000 + (i as i64) * 7).collect();
+    let budget = tether::MemoryBudget::embedded_32kb();
+    let compressed = tether::compress_i64(&original, budget);
+
+    println!("Linear ramp 2560 samples: raw {} B -> compressed {} B ({:.2}x)",
+             n * 8, compressed.len(), (n * 8) as f64 / compressed.len() as f64);
+
+    assert!(compressed.len() < 300, "Linear ramp should compress to < 300 bytes (> 68x ratio)");
+
+    let decompressed = tether::decompress_i64(&compressed).unwrap();
+    assert_eq!(decompressed, original);
+}
+
+#[test]
+fn test_roundtrip_periodic_square_repeat_history() {
+    let n = 10000;
+    let period = 200;
+    let original: Vec<i64> = (0..n).map(|i| if (i % period) < 100 { 5000 } else { -5000 }).collect();
+    let budget = tether::MemoryBudget::embedded_32kb();
+    let compressed = tether::compress_i64(&original, budget);
+
+    println!("Periodic square 10000 samples: raw {} B -> compressed {} B ({:.2}x)",
+             n * 8, compressed.len(), (n * 8) as f64 / compressed.len() as f64);
+
+    assert!(compressed.len() < 1000, "Periodic square should compress to < 1000 bytes (> 80x ratio)");
+
+    let decompressed = tether::decompress_i64(&compressed).unwrap();
+    assert_eq!(decompressed, original);
+}
+
+#[test]
+fn test_roundtrip_iot_decimal_floats() {
+    let raw = std::fs::read("data/real_world/iot_environmental.bin").unwrap();
+    let num_floats = raw.len() / 8;
+    let mut floats = Vec::with_capacity(num_floats);
+    for i in 0..num_floats {
+        floats.push(f64::from_bits(u64::from_le_bytes(raw[i*8..(i+1)*8].try_into().unwrap())));
+    }
+
+    let budget = tether::MemoryBudget::embedded_32kb();
+    let compressed = tether::compress_f64(&floats, budget);
+
+    println!("IoT environmental 100000 f64: raw {} B -> compressed {} B ({:.2}x)",
+             raw.len(), compressed.len(), raw.len() as f64 / compressed.len() as f64);
+
+    assert!(compressed.len() < 25000, "IoT decimal telemetry should compress to < 25 KB (> 32x ratio)");
+
+    let decompressed = tether::decompress_f64(&compressed).unwrap();
+    assert_eq!(decompressed.len(), floats.len());
+    for i in 0..floats.len() {
+        assert_eq!(decompressed[i].to_bits(), floats[i].to_bits(), "Float mismatch at sample {}", i);
     }
 }

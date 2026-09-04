@@ -1,6 +1,7 @@
 // Tether: Low-memory, high-speed lossless compression for streaming numeric data.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::manual_repeat_n)]
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
@@ -53,9 +54,25 @@ pub fn compress(data: &[u8], budget: MemoryBudget) -> Vec<u8> {
     if !words.is_empty() {
         let mut initial_sample = words[0];
         let mut initial_history = [words[0]; 3];
+        let max_history_dist = match budget.profile {
+            MemoryProfile::Micro4KB => 256,
+            _ => 1024,
+        };
 
-        for chunk in words.chunks(budget.block_samples) {
-            let (s, h) = BlockWriter::write_auto_i64_block(chunk, initial_sample, initial_history, &mut table, &mut out);
+        for (chunk_idx, chunk) in words.chunks(budget.block_samples).enumerate() {
+            let curr_offset = chunk_idx * budget.block_samples;
+            let hist_start = curr_offset.saturating_sub(max_history_dist);
+            let history_window = &words[hist_start..curr_offset];
+
+            let (s, h) = BlockWriter::write_auto_i64_block_with_history(
+                chunk,
+                initial_sample,
+                initial_history,
+                history_window,
+                max_history_dist,
+                &mut table,
+                &mut out,
+            );
             initial_sample = s;
             initial_history = h;
         }
@@ -144,7 +161,7 @@ pub fn compress_f64(samples: &[f64], budget: MemoryBudget) -> Vec<u8> {
         let mut table = AdaptiveTable::new_skewed();
         let mut initial = u64_samples[0];
         for chunk in u64_samples.chunks(budget.block_samples) {
-            BlockWriter::write_xor_u64_block(chunk, initial, &mut table, &mut out);
+            BlockWriter::write_auto_u64_block(chunk, initial, &mut table, &mut out);
             initial = *chunk.last().unwrap();
         }
     }

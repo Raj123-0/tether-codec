@@ -231,6 +231,92 @@ impl BlockReader {
 
                 Ok(true)
             }
+            PredictorMode::LinearRamp => {
+                if *offset + 2 + 8 + 8 > data.len() {
+                    return Err("Truncated linear ramp block header");
+                }
+                let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let start_val = i64::from_le_bytes(data[*offset..*offset + 8].try_into().unwrap());
+                *offset += 8;
+                let delta = i64::from_le_bytes(data[*offset..*offset + 8].try_into().unwrap());
+                *offset += 8;
+
+                for i in 0..sample_count {
+                    let val = start_val.wrapping_add((i as i64).wrapping_mul(delta));
+                    samples_out.push(val as u64);
+                }
+                Ok(true)
+            }
+            PredictorMode::RepeatHistory => {
+                if *offset + 2 + 2 > data.len() {
+                    return Err("Truncated repeat history block header");
+                }
+                let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let dist = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+
+                if dist == 0 || dist > samples_out.len() {
+                    return Err("Invalid history repeat distance");
+                }
+
+                for _ in 0..sample_count {
+                    let val = samples_out[samples_out.len() - dist];
+                    samples_out.push(val);
+                }
+                Ok(true)
+            }
+            PredictorMode::DecimalFloat => {
+                if *offset + 1 + 2 + 2 + 2 + 2 + 8 > data.len() {
+                    return Err("Truncated decimal float block header");
+                }
+                let scale_code = data[*offset] as usize;
+                *offset += 1;
+                let sample_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let symbol_count = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let extra_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let rans_len = u16::from_le_bytes(data[*offset..*offset + 2].try_into().unwrap()) as usize;
+                *offset += 2;
+                let initial_sample = i64::from_le_bytes(data[*offset..*offset + 8].try_into().unwrap());
+                *offset += 8;
+
+                if *offset + extra_len + rans_len > data.len() {
+                    return Err("Truncated decimal float block payloads");
+                }
+
+                const SCALES: [f64; 7] = [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0];
+                if scale_code >= SCALES.len() {
+                    return Err("Invalid decimal float scale code");
+                }
+                let scale = SCALES[scale_code];
+
+                let extra_bytes = &data[*offset..*offset + extra_len];
+                *offset += extra_len;
+                let rans_bytes = &data[*offset..*offset + rans_len];
+                *offset += rans_len;
+
+                let mut rans_dec = RansDecoder::new(rans_bytes)?;
+                let symbols = rans_dec.decode_block(symbol_count, table);
+
+                for &s in &symbols {
+                    table.observe(s);
+                }
+
+                let mut bit_reader = BitReader::new(extra_bytes);
+                let mut decoded_i64 = Vec::with_capacity(sample_count);
+                decode_delta_i64_block(&symbols, initial_sample, &mut bit_reader, sample_count, &mut decoded_i64)?;
+
+                for val in decoded_i64 {
+                    let f = (val as f64) / scale;
+                    samples_out.push(f.to_bits());
+                }
+
+                Ok(true)
+            }
         }
     }
 }
