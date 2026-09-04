@@ -30,7 +30,7 @@ jobs:
         run: cargo check --all-targets
 
       - name: Run Unit & Property Tests
-        run: cargo test --verbose
+        run: cargo test --verbose -- --test-threads=1
 
       - name: Verify Memory Contract Ceiling
         run: cargo test --test memory_ceiling -- --test-threads=1 --nocapture

@@ -1,9 +1,12 @@
-﻿use std::alloc::{GlobalAlloc, Layout, System};
+use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
+use std::sync::Mutex;
 use tether::memory_budget::MemoryBudget;
 use tether::stream::block_writer::BlockWriter;
 use tether::stream::block_reader::BlockReader;
 use tether::entropy::AdaptiveTable;
+
+static TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct TrackingAlloc {
     current: AtomicIsize,
@@ -56,6 +59,7 @@ static ALLOCATOR: TrackingAlloc = TrackingAlloc::new();
 
 #[test]
 fn test_encoder_memory_ceiling() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let budget = MemoryBudget::embedded_32kb();
     let n = 20_000;
     let data: Vec<i64> = (0..n).map(|i| (i * 3 + (i % 10)) as i64).collect();
@@ -81,6 +85,7 @@ fn test_encoder_memory_ceiling() {
 
 #[test]
 fn test_decoder_memory_ceiling() {
+    let _guard = TEST_LOCK.lock().unwrap();
     let budget = MemoryBudget::embedded_32kb();
     let n = 20_000;
     let data: Vec<i64> = (0..n).map(|i| (i * 3 + (i % 10)) as i64).collect();
