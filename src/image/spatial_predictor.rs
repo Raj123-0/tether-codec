@@ -2,6 +2,7 @@
 
 use crate::Vec;
 use crate::entropy::{AdaptiveTable, RansEncoder, RansDecoder};
+use crate::stream::bitstream::{BitReader, BitWriter};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -15,6 +16,7 @@ pub enum FilterType {
     Med = 6,
     RepeatPrev = 7,
     Constant = 8,
+    Raw = 9,
 }
 
 impl FilterType {
@@ -29,6 +31,7 @@ impl FilterType {
             6 => Some(Self::Med),
             7 => Some(Self::RepeatPrev),
             8 => Some(Self::Constant),
+            9 => Some(Self::Raw),
             _ => None,
         }
     }
@@ -148,7 +151,76 @@ pub fn select_best_filter(curr: &[u8], prev: &[u8]) -> FilterType {
     best_filter
 }
 
-/// Encode a single 8-bit image channel row with RepeatPrev and Constant fast paths.
+/// Pack 8-bit residuals into symbols and extra bits.
+/// Symbols:
+///   0: single zero residual
+///   1..127: small literal residuals 1..127 (0 extra bits)
+///   128..191: large residuals 128..255 (prefix 128 + ((r - 128) >> 1), 1 extra bit)
+///   192..255: runs of 2..65 zeros (192 -> 2 zeros, 255 -> 65 zeros, 0 extra bits)
+pub fn pack_8bit_residuals(
+    residuals: &[u8],
+    symbols_out: &mut Vec<u8>,
+    writer: &mut BitWriter,
+) {
+    let mut i = 0;
+    let n = residuals.len();
+    while i < n {
+        let r = residuals[i];
+        if r == 0 {
+            let mut run = 0usize;
+            while i < n && residuals[i] == 0 && run < 65 {
+                run += 1;
+                i += 1;
+            }
+            if run == 1 {
+                symbols_out.push(0);
+            } else {
+                symbols_out.push(192 + (run - 2) as u8);
+            }
+        } else {
+            if r < 128 {
+                symbols_out.push(r);
+            } else {
+                let sym = 128 + ((r - 128) >> 1);
+                symbols_out.push(sym);
+                writer.write_bits(((r - 128) & 1) as u64, 1);
+            }
+            i += 1;
+        }
+    }
+}
+
+/// Unpack 8-bit residuals from symbols and extra bits.
+pub fn unpack_8bit_residuals(
+    symbols: &[u8],
+    reader: &mut BitReader,
+    target_count: usize,
+    residuals_out: &mut Vec<u8>,
+) -> Result<(), &'static str> {
+    for &sym in symbols {
+        if sym == 0 {
+            residuals_out.push(0);
+        } else if sym >= 192 {
+            let run = (sym - 192) as usize + 2;
+            if residuals_out.len() + run > target_count {
+                return Err("Zero-run length exceeds target pixel count");
+            }
+            residuals_out.extend(core::iter::repeat(0).take(run));
+        } else if sym < 128 {
+            residuals_out.push(sym);
+        } else {
+            let base = 128 + (((sym - 128) as u8) << 1);
+            let bit = reader.read_bits(1) as u8;
+            residuals_out.push(base | bit);
+        }
+    }
+    if residuals_out.len() != target_count {
+        return Err("Decoded image residual count does not match expected row width");
+    }
+    Ok(())
+}
+
+/// Encode a single 8-bit image channel row with RepeatPrev, Constant, and Zero-Run fast paths.
 fn encode_channel_row(
     curr_row: &[u8],
     prev_row: &mut Vec<u8>,
@@ -176,17 +248,32 @@ fn encode_channel_row(
     row_residuals.clear();
     filter_row(curr_row, prev_row, filter, row_residuals);
 
+    let mut symbols = Vec::with_capacity(curr_row.len());
+    let mut bit_writer = BitWriter::with_capacity(curr_row.len() / 4 + 8);
+    pack_8bit_residuals(row_residuals, &mut symbols, &mut bit_writer);
+    let extra_bytes = bit_writer.finish();
+
     let mut rans = RansEncoder::new();
-    rans.encode_block(row_residuals, table);
+    rans.encode_block(&symbols, table);
     let payload = rans.finish();
 
-    for &r in row_residuals.iter() {
-        table.observe(r);
+    let compressed_len = 4 + extra_bytes.len() + payload.len();
+    if compressed_len >= curr_row.len() {
+        // Fall back to Raw row (FilterType::Raw)
+        out.push(FilterType::Raw as u8);
+        out.extend_from_slice(&(curr_row.len() as u32).to_le_bytes());
+        out.extend_from_slice(curr_row);
+    } else {
+        for &s in symbols.iter() {
+            table.observe(s);
+        }
+        out.push(filter as u8);
+        out.extend_from_slice(&(compressed_len as u32).to_le_bytes());
+        out.extend_from_slice(&(symbols.len() as u16).to_le_bytes());
+        out.extend_from_slice(&(extra_bytes.len() as u16).to_le_bytes());
+        out.extend_from_slice(&extra_bytes);
+        out.extend_from_slice(&payload);
     }
-
-    out.push(filter as u8);
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&payload);
 
     prev_row.clear();
     prev_row.extend_from_slice(curr_row);
@@ -230,19 +317,46 @@ fn decode_channel_row(
             prev_row.clear();
             prev_row.extend_from_slice(curr_row);
         }
+        FilterType::Raw => {
+            if *offset + payload_len > compressed.len() || payload_len != w {
+                return Err("Truncated or invalid raw row payload");
+            }
+            curr_row.clear();
+            curr_row.extend_from_slice(&compressed[*offset..*offset + payload_len]);
+            *offset += payload_len;
+            prev_row.clear();
+            prev_row.extend_from_slice(curr_row);
+        }
         _ => {
             if *offset + payload_len > compressed.len() {
                 return Err("Truncated image row payload");
             }
-            let payload = &compressed[*offset..*offset + payload_len];
-            *offset += payload_len;
-
-            let mut rans = RansDecoder::new(payload)?;
-            let residuals = rans.decode_block(w, table);
-
-            for &r in &residuals {
-                table.observe(r);
+            if payload_len < 4 {
+                return Err("Invalid row payload length");
             }
+            let sym_count = u16::from_le_bytes(compressed[*offset..*offset + 2].try_into().unwrap()) as usize;
+            let extra_len = u16::from_le_bytes(compressed[*offset + 2..*offset + 4].try_into().unwrap()) as usize;
+            *offset += 4;
+
+            if 4 + extra_len > payload_len {
+                return Err("Corrupted extra bits length in row payload");
+            }
+            let extra_bytes = &compressed[*offset..*offset + extra_len];
+            *offset += extra_len;
+            let rans_len = payload_len - 4 - extra_len;
+            let rans_payload = &compressed[*offset..*offset + rans_len];
+            *offset += rans_len;
+
+            let mut rans = RansDecoder::new(rans_payload)?;
+            let symbols = rans.decode_block(sym_count, table);
+
+            for &s in &symbols {
+                table.observe(s);
+            }
+
+            let mut bit_reader = BitReader::new(extra_bytes);
+            let mut residuals = Vec::with_capacity(w);
+            unpack_8bit_residuals(&symbols, &mut bit_reader, w, &mut residuals)?;
 
             curr_row.clear();
             unfilter_row(&residuals, prev_row, filter, curr_row);

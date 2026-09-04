@@ -13,6 +13,10 @@ pub struct AdaptiveTable {
     pub cum: [u16; ALPHABET_SIZE + 1],
     /// Fast reverse lookup table: slot (0..1023) -> symbol (0..255)
     pub lut: [u8; TOTAL_FREQ as usize],
+    /// Precomputed reciprocal multipliers for division-free rANS encoding
+    pub rcp_freq: [u32; ALPHABET_SIZE],
+    /// Precomputed shift amounts for reciprocal division
+    pub rcp_shift: [u8; ALPHABET_SIZE],
     /// Running raw observation counts before rescaling
     pub raw_counts: [u16; ALPHABET_SIZE],
     /// Total raw observations in current window
@@ -27,6 +31,8 @@ impl AdaptiveTable {
             freq: [0; ALPHABET_SIZE],
             cum: [0; ALPHABET_SIZE + 1],
             lut: [0; TOTAL_FREQ as usize],
+            rcp_freq: [0; ALPHABET_SIZE],
+            rcp_shift: [0; ALPHABET_SIZE],
             raw_counts: raw,
             total_raw: 1024,
         };
@@ -55,6 +61,8 @@ impl AdaptiveTable {
             freq: [0; ALPHABET_SIZE],
             cum: [0; ALPHABET_SIZE + 1],
             lut: [0; TOTAL_FREQ as usize],
+            rcp_freq: [0; ALPHABET_SIZE],
+            rcp_shift: [0; ALPHABET_SIZE],
             raw_counts: raw,
             total_raw: total,
         };
@@ -73,6 +81,8 @@ impl AdaptiveTable {
             freq: [0; ALPHABET_SIZE],
             cum: [0; ALPHABET_SIZE + 1],
             lut: [0; TOTAL_FREQ as usize],
+            rcp_freq: [0; ALPHABET_SIZE],
+            rcp_shift: [0; ALPHABET_SIZE],
             raw_counts: raw,
             total_raw: total,
         };
@@ -143,6 +153,12 @@ impl AdaptiveTable {
                 self.lut[slot as usize] = i as u8;
             }
             current_cum = end;
+
+            // Precompute reciprocal multiplication parameters for division-free rANS
+            let f_u32 = f as u32;
+            let shift = 31 + (32 - (f_u32 - 1).leading_zeros() as u8);
+            self.rcp_freq[i] = (((1u64 << shift) + (f_u32 as u64) - 1) / (f_u32 as u64)) as u32;
+            self.rcp_shift[i] = shift;
         }
         self.cum[ALPHABET_SIZE] = current_cum;
         debug_assert_eq!(current_cum as u32, TOTAL_FREQ);

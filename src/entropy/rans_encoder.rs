@@ -28,8 +28,11 @@ impl RansEncoder {
     /// Encode a single symbol using the given table.
     #[inline]
     pub fn encode_symbol(&mut self, symbol: u8, table: &AdaptiveTable) {
-        let f = table.freq[symbol as usize] as u32;
-        let c = table.cum[symbol as usize] as u32;
+        let sym_idx = symbol as usize;
+        let f = table.freq[sym_idx] as u32;
+        let c = table.cum[sym_idx] as u32;
+        let rcp_freq = table.rcp_freq[sym_idx];
+        let rcp_shift = table.rcp_shift[sym_idx];
 
         let max_x = MAX_X_BASE * f;
         while self.state >= max_x {
@@ -37,8 +40,9 @@ impl RansEncoder {
             self.state >>= 8;
         }
 
-        let q = self.state / f;
-        let r = self.state % f;
+        // Division-free fast quotient and remainder via fixed-point reciprocal multiplication
+        let q = (((self.state as u64) * (rcp_freq as u64)) >> rcp_shift) as u32;
+        let r = self.state - q * f;
         self.state = (q << TOTAL_BITS) + c + r;
     }
 

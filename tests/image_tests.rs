@@ -101,3 +101,46 @@ fn test_image_rgb_roundtrip() {
     assert_eq!(dec_h, height);
     assert_eq!(dec_pixels, pixels);
 }
+
+#[test]
+fn test_image_raw_row_fallback_on_high_entropy() {
+    // Pure pseudorandom white noise image where compression would normally expand
+    let width = 64u32;
+    let height = 32u32;
+    let mut pixels = Vec::with_capacity((width * height) as usize);
+    let mut rng: u32 = 0x12345678;
+    for _ in 0..(width * height) {
+        rng = rng.wrapping_mul(1664525).wrapping_add(1013904223);
+        pixels.push((rng >> 24) as u8);
+    }
+
+    let compressed = compress_image_grayscale(width, height, &pixels).unwrap();
+    // With FilterType::Raw fallback, compressed size should be tightly bounded
+    assert!(compressed.len() <= pixels.len() + (height as usize * 5) + 32);
+
+    let (dec_w, dec_h, dec_pixels) = decompress_image_grayscale(&compressed).unwrap();
+    assert_eq!(dec_w, width);
+    assert_eq!(dec_h, height);
+    assert_eq!(dec_pixels, pixels);
+}
+
+#[test]
+fn test_image_large_zero_runs() {
+    let width = 512u32;
+    let height = 16u32;
+    // Entirely zero image with a few isolated spikes
+    let mut pixels = vec![0u8; (width * height) as usize];
+    pixels[10] = 50;
+    pixels[500] = 200;
+
+    let compressed = compress_image_grayscale(width, height, &pixels).unwrap();
+    let ratio = pixels.len() as f64 / compressed.len() as f64;
+    println!("Zero runs image (512x16): raw {} B -> compressed {} B ({:.2}x)",
+             pixels.len(), compressed.len(), ratio);
+    assert!(ratio > 10.0);
+
+    let (dec_w, dec_h, dec_pixels) = decompress_image_grayscale(&compressed).unwrap();
+    assert_eq!(dec_w, width);
+    assert_eq!(dec_h, height);
+    assert_eq!(dec_pixels, pixels);
+}

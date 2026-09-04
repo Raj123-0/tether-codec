@@ -53,7 +53,7 @@ fn main() {
             print_usage();
         }
         "-V" | "--version" => {
-            println!("tether-codec v0.1.0");
+            println!("tether-codec v{}", env!("CARGO_PKG_VERSION"));
         }
         "compress" => {
             if args.len() < 3 {
